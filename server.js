@@ -105,7 +105,7 @@ async function aiResponse(channelId, message) {
   console.log(`📌 AI processing response for: "${message}"`);
   try {
     const completion = await openai.chat.completions.create({
-      model: "gpt-4",
+      model: "gpt-4-turbo",
       messages: [{ role: "system", content: "You are a helpful assistant responding to Slack messages." },
                  { role: "user", content: message }],
     });
