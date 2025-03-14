@@ -29,7 +29,14 @@ app.post("/slack/events", async (req, res) => {
     if (userMessage.includes(`<@${botUserId}>`)) {
       console.log("✅ Bot was mentioned!");
       const messageWithoutTag = userMessage.replace(`<@${botUserId}>`, "").trim();
-      await processCommand(channelId, messageWithoutTag);
+      
+      // 🔹 Periksa jika pengguna meminta bot menghapus chat terakhirnya
+      if (messageWithoutTag.toLowerCase().includes("remove your last chat")) {
+        console.log("🗑️ Removing last bot message...");
+        await removeLastBotMessage(channelId);
+      } else {
+        await processCommand(channelId, messageWithoutTag);
+      }
     }
   }
 
