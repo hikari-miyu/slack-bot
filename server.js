@@ -23,9 +23,10 @@ app.post("/slack/events", async (req, res) => {
   if (event && event.type === "message" && !event.subtype) {
     console.log(`🔹 New Message Received: "${event.text}"`);
     const channelId = event.channel;
-    const userMessage = event.text.trim().toLowerCase();
+    const userMessageOriginal = event.text.trim();
+    const userMessage = userMessageOriginal.toLowerCase();
 
-    if (userMessage.includes(`<@${botUserId}>`)) {
+    if (userMessageOriginal.includes(`<@${botUserId}>`)) {
       console.log("✅ Bot was mentioned!");
       const command = userMessage.replace(`<@${botUserId}>`, "").trim();
       const aiIntent = await analyzeIntent(command);
