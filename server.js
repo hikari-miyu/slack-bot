@@ -13,6 +13,7 @@ const botUserId = process.env.SLACK_BOT_USER_ID;
 app.use(express.json());
 
 app.post("/slack/events", async (req, res) => {
+  console.log("\n✅ Received Slack Event:", JSON.stringify(req.body, null, 2));
   const { type, challenge, event } = req.body;
 
   if (type === "url_verification") {
@@ -20,13 +21,16 @@ app.post("/slack/events", async (req, res) => {
   }
 
   if (event && event.type === "message" && !event.subtype) {
+    console.log(`🔹 New Message Received: "${event.text}"`);
     const channelId = event.channel;
     const userMessage = event.text.trim().toLowerCase();
 
     if (userMessage.includes(`<@${botUserId}>`)) {
+      console.log("✅ Bot was mentioned!");
       const command = userMessage.replace(`<@${botUserId}>`, "").trim();
       const aiIntent = await analyzeIntent(command);
-      
+      console.log("📌 Intent detected:", aiIntent);
+
       if (aiIntent.action === "list_tasks") {
         await listTasks(channelId, aiIntent.date);
       } else if (aiIntent.action === "delete_messages") {
@@ -34,19 +38,23 @@ app.post("/slack/events", async (req, res) => {
       } else {
         await aiResponse(channelId, command);
       }
+    } else {
+      console.log("⚠️ Bot was NOT mentioned, ignoring...");
     }
   }
   res.sendStatus(200);
 });
 
 async function analyzeIntent(command) {
+  console.log(`📤 Sending request to OpenAI: "${command}"`);
   try {
     const completion = await openai.chat.completions.create({
       model: "gpt-4",
       messages: [
-        { role: "system", content: "You are a Slack bot that extracts intent, date, and count from user messages." },
+        { role: "system", content: "Extract intent, date, and count from user messages in JSON format." },
         { role: "user", content: `Extract intent from: "${command}"` },
       ],
+      response_format: "json",
     });
     return JSON.parse(completion.choices[0].message.content);
   } catch (error) {
@@ -56,6 +64,7 @@ async function analyzeIntent(command) {
 }
 
 async function removeBotMessages(channelId, date, count = 1) {
+  console.log(`📌 Deleting messages from bot, Date: ${date || "N/A"}, Count: ${count}`);
   try {
     const response = await slackClient.conversations.history({ channel: channelId, limit: 100 });
     let botMessages = response.messages.filter(msg => msg.user === botUserId);
@@ -68,6 +77,7 @@ async function removeBotMessages(channelId, date, count = 1) {
     for (const msg of botMessages) {
       await slackClient.chat.delete({ channel: channelId, ts: msg.ts });
     }
+    console.log(`✅ Removed ${botMessages.length} messages.`);
     await slackClient.chat.postMessage({ channel: channelId, text: `✅ Removed ${botMessages.length} of my messages.` });
   } catch (error) {
     console.error("❌ Error deleting messages:", error);
@@ -75,6 +85,7 @@ async function removeBotMessages(channelId, date, count = 1) {
 }
 
 async function aiResponse(channelId, message) {
+  console.log(`📌 AI is generating response for: "${message}"`);
   try {
     const completion = await openai.chat.completions.create({
       model: "gpt-4",
@@ -83,6 +94,7 @@ async function aiResponse(channelId, message) {
         { role: "user", content: message },
       ],
     });
+    console.log("📥 OpenAI Response:", completion.choices[0].message.content);
     await slackClient.chat.postMessage({ channel: channelId, text: `🤖 ${completion.choices[0].message.content}` });
   } catch (error) {
     console.error("❌ Error with AI response:", error);
