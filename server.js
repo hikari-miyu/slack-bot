@@ -53,7 +53,30 @@ async function analyzeIntent(command) {
       model: "gpt-4-turbo",
       response_format: "json",
       messages: [
-        { role: "system", content: "You are a Slack bot that extracts intent, date, and count from user messages. Respond in JSON format only." },
+        {
+          role: "system",
+          content: `You are a Slack bot assistant that extracts user intent from messages. 
+          Respond ONLY in JSON format. Example output:
+          
+          - {"action": "delete_messages", "date": "today"}
+          - {"action": "list_tasks", "date": "yesterday"}
+          - {"action": "summarize_chat", "date": "this week"}
+          - {"action": "unknown"}
+          
+          Possible actions:
+          - "delete_messages" -> When user wants to delete messages.
+          - "list_tasks" -> When user asks for completed or pending tasks.
+          - "summarize_chat" -> When user asks for a chat summary.
+          - "unknown" -> If intent is unclear.
+
+          Examples:
+          - "delete all my messages today" -> {"action": "delete_messages", "date": "today"}
+          - "erase my chats from yesterday" -> {"action": "delete_messages", "date": "yesterday"}
+          - "what tasks were completed last week?" -> {"action": "list_tasks", "date": "last week"}
+          - "summarize our chat from Monday" -> {"action": "summarize_chat", "date": "Monday"}
+          - "hello bot, how are you?" -> {"action": "unknown"}
+          `,
+        },
         { role: "user", content: `Extract intent from: "${command}"` },
       ],
       response_format: "json",
