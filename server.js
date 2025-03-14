@@ -50,27 +50,10 @@ async function analyzeIntent(command) {
   console.log(`📤 Sending request to OpenAI: "${command}"`);
   try {
     const completion = await openai.chat.completions.create({
-      model: "gpt-4",
+      model: "gpt-4-turbo",
+      response_format: "json",
       messages: [
-        { role: "system", content: `
-          You are a Slack bot assistant. Your task is to extract the user's intent from their message.
-          You must respond in JSON format like this:
-          {
-            "action": "list_tasks" | "delete_messages" | "unknown",
-            "date": "YYYY-MM-DD" | null,
-            "count": number | null
-          }
-
-          - "list_tasks": When the user asks for completed or pending tasks.
-          - "delete_messages": When the user asks to remove messages.
-          - "unknown": If the request is unclear.
-
-          Examples:
-          - "List my tasks from yesterday" → { "action": "list_tasks", "date": "2025-03-13", "count": null }
-          - "Remove all my chats today" → { "action": "delete_messages", "date": "2025-03-14", "count": null }
-          - "Delete last 3 messages" → { "action": "delete_messages", "date": null, "count": 3 }
-          - "Tell me a joke" → { "action": "unknown", "date": null, "count": null }
-        `},
+        { role: "system", content: "You are a Slack bot that extracts intent, date, and count from user messages. Respond in JSON format only." },
         { role: "user", content: `Extract intent from: "${command}"` },
       ],
       response_format: "json",
@@ -83,21 +66,34 @@ async function analyzeIntent(command) {
 }
 
 async function removeBotMessages(channelId, date, count = 1) {
-  console.log(`📌 Deleting messages from bot, Date: ${date || "N/A"}, Count: ${count}`);
   try {
-    const response = await slackClient.conversations.history({ channel: channelId, limit: 100 });
-    let botMessages = response.messages.filter(msg => msg.user === botUserId);
+    console.log(`🗑️ Removing messages from bot in channel ${channelId}`);
+
+    const response = await slackClient.conversations.history({
+      channel: channelId,
+      limit: 100,
+    });
+
+    let botMessages = response.messages.filter((msg) => msg.user === botUserId);
+
     if (date) {
       const targetDate = moment(date, "YYYY-MM-DD").startOf("day");
-      botMessages = botMessages.filter(msg => moment.unix(msg.ts).isSame(targetDate, "day"));
+      botMessages = botMessages.filter((msg) =>
+        moment.unix(msg.ts).isSame(targetDate, "day")
+      );
     } else {
       botMessages = botMessages.slice(0, count);
     }
+
     for (const msg of botMessages) {
+      console.log(`🚮 Deleting message: ${msg.text}`);
       await slackClient.chat.delete({ channel: channelId, ts: msg.ts });
     }
-    console.log(`✅ Removed ${botMessages.length} messages.`);
-    await slackClient.chat.postMessage({ channel: channelId, text: `✅ Removed ${botMessages.length} of my messages.` });
+
+    await slackClient.chat.postMessage({
+      channel: channelId,
+      text: `✅ Removed ${botMessages.length} of my messages.`,
+    });
   } catch (error) {
     console.error("❌ Error deleting messages:", error);
   }
@@ -114,7 +110,10 @@ async function aiResponse(channelId, message) {
       ],
     });
     console.log("📥 OpenAI Response:", completion.choices[0].message.content);
-    await slackClient.chat.postMessage({ channel: channelId, text: `🤖 ${completion.choices[0].message.content}` });
+    await slackClient.chat.postMessage({
+      channel: channelId,
+      text: `🤖 ${completion.choices[0].message.content}`,
+    });
   } catch (error) {
     console.error("❌ Error with AI response:", error);
   }
