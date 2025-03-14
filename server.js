@@ -13,8 +13,6 @@ const botUserId = process.env.SLACK_BOT_USER_ID;
 app.use(express.json());
 
 app.post("/slack/events", async (req, res) => {
-  console.log("\n✅ Received Slack Event:", JSON.stringify(req.body, null, 2));
-
   const { type, challenge, event } = req.body;
 
   if (type === "url_verification") {
@@ -22,112 +20,73 @@ app.post("/slack/events", async (req, res) => {
   }
 
   if (event && event.type === "message" && !event.subtype) {
-    console.log(`🔹 New Message Received: "${event.text}"`);
     const channelId = event.channel;
-    const userMessage = event.text.trim();
+    const userMessage = event.text.trim().toLowerCase();
 
     if (userMessage.includes(`<@${botUserId}>`)) {
-      console.log("✅ Bot was mentioned!");
-      const messageWithoutTag = userMessage.replace(`<@${botUserId}>`, "").trim().toLowerCase();
-
-      if (messageWithoutTag.includes("list my tasks")) {
-        await listTasks(channelId, messageWithoutTag);
-      } else if (messageWithoutTag.includes("remove") && messageWithoutTag.includes("last chat")) {
-        await removeLastBotMessage(channelId);
+      const command = userMessage.replace(`<@${botUserId}>`, "").trim();
+      const aiIntent = await analyzeIntent(command);
+      
+      if (aiIntent.action === "list_tasks") {
+        await listTasks(channelId, aiIntent.date);
+      } else if (aiIntent.action === "delete_messages") {
+        await removeBotMessages(channelId, aiIntent.date, aiIntent.count);
       } else {
-        await aiResponse(channelId, messageWithoutTag);
+        await aiResponse(channelId, command);
       }
     }
   }
-
   res.sendStatus(200);
 });
 
-// 🔹 Mengambil daftar tugas berdasarkan filter waktu
-async function listTasks(channelId, command) {
-  console.log("🔹 Fetching task list...");
-  try {
-    const response = await slackClient.conversations.history({
-      channel: channelId,
-      limit: 100,
-    });
-
-    const messages = response.messages;
-    const tasks = [];
-    const timeFilter = parseDateFilter(command);
-
-    for (const msg of messages) {
-      if ((msg.text.includes("done") || msg.text.includes("finish")) && msg.text.includes("FD1-")) {
-        const messageTime = moment.unix(msg.ts);
-        if (!timeFilter || messageTime.isSame(timeFilter, "day")) {
-          const permalink = await slackClient.chat.getPermalink({ channel: channelId, message_ts: msg.ts });
-          tasks.push(`- ${msg.text} - ${permalink.permalink}`);
-        }
-      }
-    }
-
-    const taskList = tasks.length ? tasks.join("\n") : "No tasks found.";
-    await slackClient.chat.postMessage({
-      channel: channelId,
-      text: `*Tasks finished:*\n${taskList}`,
-    });
-
-  } catch (error) {
-    console.error("❌ Error fetching tasks:", error);
-  }
-}
-
-// 🔹 Menghapus pesan terakhir bot
-async function removeLastBotMessage(channelId) {
-  console.log("🔹 Searching for the last bot message to delete...");
-  try {
-    const response = await slackClient.conversations.history({ channel: channelId, limit: 20 });
-    const botMessages = response.messages.filter(msg => msg.user === botUserId);
-
-    if (botMessages.length > 0) {
-      const lastBotMessage = botMessages[0];
-      await slackClient.chat.delete({ channel: channelId, ts: lastBotMessage.ts });
-      console.log("✅ Last bot message deleted successfully!");
-    } else {
-      console.log("⚠️ No bot messages found to delete.");
-      await slackClient.chat.postMessage({
-        channel: channelId,
-        text: "⚠️ No recent bot messages found to delete."
-      });
-    }
-  } catch (error) {
-    console.error("❌ Error deleting message:", error);
-  }
-}
-
-// 🔹 AI Response menggunakan OpenAI
-async function aiResponse(channelId, message) {
-  console.log(`📌 AI processing response for: "${message}"`);
+async function analyzeIntent(command) {
   try {
     const completion = await openai.chat.completions.create({
       model: "gpt-4",
-      messages: [{ role: "system", content: "You are a helpful assistant responding to Slack messages." },
-                 { role: "user", content: message }],
+      messages: [
+        { role: "system", content: "You are a Slack bot that extracts intent, date, and count from user messages." },
+        { role: "user", content: `Extract intent from: "${command}"` },
+      ],
     });
-
-    const aiText = completion.choices[0].message.content;
-    await slackClient.chat.postMessage({ channel: channelId, text: `🤖 ${aiText}` });
-    console.log("✅ AI response sent!");
+    return JSON.parse(completion.choices[0].message.content);
   } catch (error) {
-    console.error("❌ Error with AI response:", error);
+    console.error("❌ Error analyzing intent:", error);
+    return { action: "unknown" };
   }
 }
 
-// 🔹 Parsing tanggal dari command
-function parseDateFilter(command) {
-  const today = moment().startOf("day");
+async function removeBotMessages(channelId, date, count = 1) {
+  try {
+    const response = await slackClient.conversations.history({ channel: channelId, limit: 100 });
+    let botMessages = response.messages.filter(msg => msg.user === botUserId);
+    if (date) {
+      const targetDate = moment(date, "YYYY-MM-DD").startOf("day");
+      botMessages = botMessages.filter(msg => moment.unix(msg.ts).isSame(targetDate, "day"));
+    } else {
+      botMessages = botMessages.slice(0, count);
+    }
+    for (const msg of botMessages) {
+      await slackClient.chat.delete({ channel: channelId, ts: msg.ts });
+    }
+    await slackClient.chat.postMessage({ channel: channelId, text: `✅ Removed ${botMessages.length} of my messages.` });
+  } catch (error) {
+    console.error("❌ Error deleting messages:", error);
+  }
+}
 
-  if (command.includes("today")) return today;
-  if (command.includes("yesterday")) return today.subtract(1, "day");
-  const match = command.match(/(\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b)/i);
-  if (match) return moment().day(match[1]).startOf("day");
-
-  return null;
+async function aiResponse(channelId, message) {
+  try {
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4",
+      messages: [
+        { role: "system", content: "You are a helpful Slack assistant." },
+        { role: "user", content: message },
+      ],
+    });
+    await slackClient.chat.postMessage({ channel: channelId, text: `🤖 ${completion.choices[0].message.content}` });
+  } catch (error) {
+    console.error("❌ Error with AI response:", error);
+  }
 }
 
 app.listen(port, () => {
