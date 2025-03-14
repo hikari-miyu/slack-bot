@@ -111,7 +111,7 @@ async function aiResponse(channelId, message) {
     });
 
     const aiText = completion.choices[0].message.content;
-    await slackClient.chat.postMessage({ channel: channelId, text: `🤖 AI Response: ${aiText}` });
+    await slackClient.chat.postMessage({ channel: channelId, text: `🤖 ${aiText}` });
     console.log("✅ AI response sent!");
   } catch (error) {
     console.error("❌ Error with AI response:", error);
