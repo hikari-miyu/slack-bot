@@ -52,7 +52,25 @@ async function analyzeIntent(command) {
     const completion = await openai.chat.completions.create({
       model: "gpt-4",
       messages: [
-        { role: "system", content: "Extract intent, date, and count from user messages in JSON format." },
+        { role: "system", content: `
+          You are a Slack bot assistant. Your task is to extract the user's intent from their message.
+          You must respond in JSON format like this:
+          {
+            "action": "list_tasks" | "delete_messages" | "unknown",
+            "date": "YYYY-MM-DD" | null,
+            "count": number | null
+          }
+
+          - "list_tasks": When the user asks for completed or pending tasks.
+          - "delete_messages": When the user asks to remove messages.
+          - "unknown": If the request is unclear.
+
+          Examples:
+          - "List my tasks from yesterday" → { "action": "list_tasks", "date": "2025-03-13", "count": null }
+          - "Remove all my chats today" → { "action": "delete_messages", "date": "2025-03-14", "count": null }
+          - "Delete last 3 messages" → { "action": "delete_messages", "date": null, "count": 3 }
+          - "Tell me a joke" → { "action": "unknown", "date": null, "count": null }
+        `},
         { role: "user", content: `Extract intent from: "${command}"` },
       ],
       response_format: "json",
