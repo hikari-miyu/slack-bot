@@ -32,7 +32,7 @@ app.post("/slack/events", async (req, res) => {
 
       if (messageWithoutTag.includes("list my tasks")) {
         await listTasks(channelId, messageWithoutTag);
-      } else if (messageWithoutTag.includes("remove your last chat")) {
+      } else if (messageWithoutTag.includes("remove") && messageWithoutTag.includes("last chat")) {
         await removeLastBotMessage(channelId);
       } else {
         await aiResponse(channelId, messageWithoutTag);
@@ -105,7 +105,7 @@ async function aiResponse(channelId, message) {
   console.log(`📌 AI processing response for: "${message}"`);
   try {
     const completion = await openai.chat.completions.create({
-      model: "gpt-4-turbo",
+      model: "gpt-3.5-turbo",
       messages: [{ role: "system", content: "You are a helpful assistant responding to Slack messages." },
                  { role: "user", content: message }],
     });
