@@ -8,7 +8,7 @@ const app = express();
 const port = process.env.PORT || 3000;
 const slackClient = new WebClient(process.env.SLACK_BOT_TOKEN);
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const botUserId = process.env.SLACK_BOT_USER_ID; 
+const botUserId = process.env.SLACK_BOT_USER_ID;
 
 app.use(express.json());
 
@@ -28,14 +28,14 @@ app.post("/slack/events", async (req, res) => {
 
     if (userMessage.includes(`<@${botUserId}>`)) {
       console.log("✅ Bot was mentioned!");
-      const messageWithoutTag = userMessage.replace(`<@${botUserId}>`, "").trim();
-      
-      // 🔹 Periksa jika pengguna meminta bot menghapus chat terakhirnya
-      if (messageWithoutTag.toLowerCase().includes("remove your last chat")) {
-        console.log("🗑️ Removing last bot message...");
+      const messageWithoutTag = userMessage.replace(`<@${botUserId}>`, "").trim().toLowerCase();
+
+      if (messageWithoutTag.includes("list my tasks")) {
+        await listTasks(channelId, messageWithoutTag);
+      } else if (messageWithoutTag.includes("remove your last chat")) {
         await removeLastBotMessage(channelId);
       } else {
-        await processCommand(channelId, messageWithoutTag);
+        await aiResponse(channelId, messageWithoutTag);
       }
     }
   }
@@ -43,73 +43,91 @@ app.post("/slack/events", async (req, res) => {
   res.sendStatus(200);
 });
 
-async function processCommand(channelId, userCommand) {
-  console.log(`📌 Processing command: "${userCommand}"`);
-
-  const matchDate = userCommand.match(/(yesterday|today|(\b\w+\bday\b))/i);
-  let targetDate = moment().subtract(1, "days"); // Default: yesterday
-
-  if (matchDate) {
-    if (matchDate[0].toLowerCase() === "today") {
-      targetDate = moment();
-    } else if (matchDate[0].toLowerCase() === "yesterday") {
-      targetDate = moment().subtract(1, "days");
-    } else {
-      targetDate = moment().day(matchDate[0]); // Example: "Monday" -> moment().day("Monday")
-    }
-  }
-
-  const formattedDate = targetDate.format("YYYY-MM-DD");
-  console.log(`📅 Fetching history for: ${formattedDate}`);
-
-  const history = await fetchChatHistory(channelId, formattedDate);
-  const aiResponse = await generateAIResponse(userCommand, history);
-
-  await slackClient.chat.postMessage({
-    channel: channelId,
-    text: aiResponse,
-  });
-
-  console.log("✅ AI response sent!");
-}
-
-async function fetchChatHistory(channelId, targetDate) {
-  console.log("🔹 Fetching chat history...");
+// 🔹 Mengambil daftar tugas berdasarkan filter waktu
+async function listTasks(channelId, command) {
+  console.log("🔹 Fetching task list...");
   try {
     const response = await slackClient.conversations.history({
       channel: channelId,
       limit: 100,
     });
 
-    const messages = response.messages.filter(msg =>
-      moment.unix(msg.ts).format("YYYY-MM-DD") === targetDate
-    );
+    const messages = response.messages;
+    const tasks = [];
+    const timeFilter = parseDateFilter(command);
 
-    console.log(`🔹 Found ${messages.length} messages from ${targetDate}`);
-    return messages.map(msg => `- ${msg.text}`).join("\n");
+    for (const msg of messages) {
+      if ((msg.text.includes("done") || msg.text.includes("finish")) && msg.text.includes("FD1-")) {
+        const messageTime = moment.unix(msg.ts);
+        if (!timeFilter || messageTime.isSame(timeFilter, "day")) {
+          const permalink = await slackClient.chat.getPermalink({ channel: channelId, message_ts: msg.ts });
+          tasks.push(`- ${msg.text} - ${permalink.permalink}`);
+        }
+      }
+    }
+
+    const taskList = tasks.length ? tasks.join("\n") : "No tasks found.";
+    await slackClient.chat.postMessage({
+      channel: channelId,
+      text: `*Tasks finished:*\n${taskList}`,
+    });
+
   } catch (error) {
-    console.error("❌ Error fetching history:", error);
-    return "No history found.";
+    console.error("❌ Error fetching tasks:", error);
   }
 }
 
-async function generateAIResponse(userCommand, chatHistory) {
-  console.log(`🤖 Sending request to OpenAI...`);
+// 🔹 Menghapus pesan terakhir bot
+async function removeLastBotMessage(channelId) {
+  console.log("🔹 Searching for the last bot message to delete...");
+  try {
+    const response = await slackClient.conversations.history({ channel: channelId, limit: 20 });
+    const botMessages = response.messages.filter(msg => msg.user === botUserId);
+
+    if (botMessages.length > 0) {
+      const lastBotMessage = botMessages[0];
+      await slackClient.chat.delete({ channel: channelId, ts: lastBotMessage.ts });
+      console.log("✅ Last bot message deleted successfully!");
+    } else {
+      console.log("⚠️ No bot messages found to delete.");
+      await slackClient.chat.postMessage({
+        channel: channelId,
+        text: "⚠️ No recent bot messages found to delete."
+      });
+    }
+  } catch (error) {
+    console.error("❌ Error deleting message:", error);
+  }
+}
+
+// 🔹 AI Response menggunakan OpenAI
+async function aiResponse(channelId, message) {
+  console.log(`📌 AI processing response for: "${message}"`);
   try {
     const completion = await openai.chat.completions.create({
       model: "gpt-4",
-      messages: [
-        { role: "system", content: "You are a Slack assistant that summarizes chat history and answers based on past discussions." },
-        { role: "user", content: `Here is the chat history:\n${chatHistory}\n\nNow, based on the command "${userCommand}", generate a relevant response.` }
-      ],
+      messages: [{ role: "system", content: "You are a helpful assistant responding to Slack messages." },
+                 { role: "user", content: message }],
     });
 
-    console.log(`✅ AI Response: ${completion.choices[0].message.content}`);
-    return completion.choices[0].message.content;
+    const aiText = completion.choices[0].message.content;
+    await slackClient.chat.postMessage({ channel: channelId, text: `🤖 AI Response: ${aiText}` });
+    console.log("✅ AI response sent!");
   } catch (error) {
-    console.error("❌ OpenAI API error:", error);
-    return "Error generating AI response.";
+    console.error("❌ Error with AI response:", error);
   }
+}
+
+// 🔹 Parsing tanggal dari command
+function parseDateFilter(command) {
+  const today = moment().startOf("day");
+
+  if (command.includes("today")) return today;
+  if (command.includes("yesterday")) return today.subtract(1, "day");
+  const match = command.match(/(\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b)/i);
+  if (match) return moment().day(match[1]).startOf("day");
+
+  return null;
 }
 
 app.listen(port, () => {
