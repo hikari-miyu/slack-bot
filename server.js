@@ -30,20 +30,30 @@ app.post("/slack/events", async (req, res) => {
       console.log("✅ Bot was mentioned!");
       const command = userMessage.replace(`<@${botUserId}>`, "").trim();
       
-      // 1️⃣ Ambil history chat sebelum AI menjawab
-      const history = await getChatHistory(channelId, "yesterday"); // Bisa ubah ke 'today' atau range lain
-      
-      // 2️⃣ Analisis intent berdasarkan perintah user
+      // 1️⃣ Analisis intent user
       const aiIntent = await analyzeIntent(command);
       console.log("📌 Intent detected:", aiIntent);
 
-      // 3️⃣ Eksekusi perintah berdasarkan intent
+      // 2️⃣ Pastikan tanggal masih dalam batas 7 hari
+      if (aiIntent.date && !isDateWithinLimit(aiIntent.date)) {
+        console.log("⚠️ Date exceeds 7-day limit!");
+        await slackClient.chat.postMessage({
+          channel: channelId,
+          text: "⚠️ Maaf, saya hanya bisa mengakses history maksimal 7 hari ke belakang.",
+        });
+        return;
+      }
+
+      // 3️⃣ Ambil history chat (jika valid)
+      const history = aiIntent.date ? await getChatHistory(channelId, aiIntent.date) : "";
+
+      // 4️⃣ Jalankan aksi sesuai intent
       if (aiIntent.action === "list_tasks") {
         await listTasks(channelId, aiIntent.date, history);
       } else if (aiIntent.action === "delete_messages") {
         await removeBotMessages(channelId, aiIntent.date, aiIntent.count);
       } else {
-        await aiResponse(channelId, command, history); // ⬅️ AI sekarang pakai history sebagai konteks
+        await aiResponse(channelId, command, history); // AI pakai history sebagai konteks
       }
     } else {
       console.log("⚠️ Bot was NOT mentioned, ignoring...");
@@ -52,8 +62,20 @@ app.post("/slack/events", async (req, res) => {
   res.sendStatus(200);
 });
 
-// 🔥 Fungsi untuk mengambil history chat
+// 🔥 Fungsi untuk cek apakah tanggal dalam batas 7 hari
+function isDateWithinLimit(dateString) {
+  const targetDate = moment(dateString, "YYYY-MM-DD");
+  const sevenDaysAgo = moment().subtract(7, "days").startOf("day");
+  return targetDate.isSameOrAfter(sevenDaysAgo);
+}
+
+// 🔥 Fungsi untuk mengambil history chat (dengan validasi 7 hari)
 async function getChatHistory(channel, date) {
+  if (!isDateWithinLimit(date)) {
+    console.log("⛔ Request untuk history lebih dari 7 hari ditolak.");
+    return "⚠️ History lebih dari 7 hari tidak bisa diakses.";
+  }
+
   try {
     console.log(`📜 Fetching chat history from ${date} in channel ${channel}`);
     
@@ -73,18 +95,23 @@ async function getChatHistory(channel, date) {
   }
 }
 
-// 🔥 Modifikasi AI Response untuk pakai history chat
+// 🔥 AI Response (gunakan history chat jika ada)
 async function aiResponse(channelId, message, history) {
   console.log(`📌 AI is generating response for: "${message}"`);
   try {
+    const messages = [{ role: "system", content: "You are a helpful Slack assistant." }];
+
+    if (history && !history.includes("⚠️ History lebih dari 7 hari tidak bisa diakses.")) {
+      messages.push({ role: "user", content: `Chat history:\n${history}` });
+    }
+
+    messages.push({ role: "user", content: `User's message: "${message}"` });
+
     const completion = await openai.chat.completions.create({
       model: "gpt-4",
-      messages: [
-        { role: "system", content: "You are a helpful Slack assistant. Use the chat history for better context." },
-        { role: "user", content: `Chat history:\n${history}` },
-        { role: "user", content: `User's message: "${message}"` },
-      ],
+      messages,
     });
+
     console.log("📥 OpenAI Response:", completion.choices[0].message.content);
     await slackClient.chat.postMessage({
       channel: channelId,
