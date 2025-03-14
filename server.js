@@ -1,10 +1,12 @@
 require("dotenv").config();
 const express = require("express");
 const { WebClient } = require("@slack/web-api");
+const { OpenAI } = require("openai");
 
 const app = express();
 const port = process.env.PORT || 3000;
 const slackClient = new WebClient(process.env.SLACK_BOT_TOKEN);
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 app.use(express.json());
 
@@ -23,13 +25,16 @@ app.post("/slack/events", async (req, res) => {
 
     if (userMessage.includes("list me my tasks")) {
       await listTasks(channelId);
+    } else {
+      const aiResponse = await askOpenAI(userMessage);
+      await slackClient.chat.postMessage({ channel: channelId, text: aiResponse });
     }
   }
 
   res.sendStatus(200);
 });
 
-// Fungsi untuk mengambil list tugas dari channel Slack
+// Fungsi untuk mengambil list tugas dari channel Slack berdasarkan emoji 🔥
 async function listTasks(channelId) {
   try {
     const response = await slackClient.conversations.history({
@@ -57,6 +62,21 @@ async function listTasks(channelId) {
     });
   } catch (error) {
     console.error("Error fetching tasks:", error);
+  }
+}
+
+// Fungsi untuk bertanya ke OpenAI
+async function askOpenAI(prompt) {
+  try {
+    const response = await openai.chat.completions.create({
+      model: "gpt-3.5-turbo",
+      messages: [{ role: "user", content: prompt }],
+    });
+
+    return response.choices[0].message.content.trim();
+  } catch (error) {
+    console.error("Error with OpenAI:", error);
+    return "Sorry, I couldn't process your request.";
   }
 }
 
