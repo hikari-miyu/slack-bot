@@ -1,100 +1,107 @@
 require("dotenv").config();
 const express = require("express");
 const { WebClient } = require("@slack/web-api");
+const { OpenAI } = require("openai");
+const moment = require("moment");
 
 const app = express();
 const port = process.env.PORT || 3000;
 const slackClient = new WebClient(process.env.SLACK_BOT_TOKEN);
-const botUserId = process.env.SLACK_BOT_USER_ID; // Pastikan ini diambil dari .env
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const botUserId = process.env.SLACK_BOT_USER_ID; 
 
 app.use(express.json());
 
 app.post("/slack/events", async (req, res) => {
-  console.log("\n✅ Received Slack Event:");
-  console.log(JSON.stringify(req.body, null, 2));
+  console.log("\n✅ Received Slack Event:", JSON.stringify(req.body, null, 2));
 
   const { type, challenge, event } = req.body;
 
-  // 🔹 Step 1: Verifikasi URL dari Slack
   if (type === "url_verification") {
-    console.log("🔹 URL Verification Event");
     return res.status(200).json({ challenge });
   }
 
-  // 🔹 Step 2: Cek apakah ada pesan masuk
   if (event && event.type === "message" && !event.subtype) {
     console.log(`🔹 New Message Received: "${event.text}"`);
     const channelId = event.channel;
     const userMessage = event.text.trim();
 
-    // 🔹 Step 3: Periksa apakah bot di-mention
     if (userMessage.includes(`<@${botUserId}>`)) {
       console.log("✅ Bot was mentioned!");
       const messageWithoutTag = userMessage.replace(`<@${botUserId}>`, "").trim();
-
-      // 🔹 Step 4: Cek apakah pengguna meminta daftar tugas
-      if (messageWithoutTag.toLowerCase().includes("list my tasks")) {
-        console.log("📌 Detected 'list my tasks' command");
-        await listTasks(channelId);
-      } else {
-        console.log("📌 AI response triggered");
-        await aiResponse(channelId, messageWithoutTag);
-      }
-    } else {
-      console.log("⚠️ Bot was NOT mentioned, ignoring...");
+      await processCommand(channelId, messageWithoutTag);
     }
   }
 
   res.sendStatus(200);
 });
 
-// 🔹 Fungsi untuk mengambil daftar tugas
-async function listTasks(channelId) {
-  console.log("🔹 Fetching task list from Slack...");
+async function processCommand(channelId, userCommand) {
+  console.log(`📌 Processing command: "${userCommand}"`);
+
+  const matchDate = userCommand.match(/(yesterday|today|(\b\w+\bday\b))/i);
+  let targetDate = moment().subtract(1, "days"); // Default: yesterday
+
+  if (matchDate) {
+    if (matchDate[0].toLowerCase() === "today") {
+      targetDate = moment();
+    } else if (matchDate[0].toLowerCase() === "yesterday") {
+      targetDate = moment().subtract(1, "days");
+    } else {
+      targetDate = moment().day(matchDate[0]); // Example: "Monday" -> moment().day("Monday")
+    }
+  }
+
+  const formattedDate = targetDate.format("YYYY-MM-DD");
+  console.log(`📅 Fetching history for: ${formattedDate}`);
+
+  const history = await fetchChatHistory(channelId, formattedDate);
+  const aiResponse = await generateAIResponse(userCommand, history);
+
+  await slackClient.chat.postMessage({
+    channel: channelId,
+    text: aiResponse,
+  });
+
+  console.log("✅ AI response sent!");
+}
+
+async function fetchChatHistory(channelId, targetDate) {
+  console.log("🔹 Fetching chat history...");
   try {
     const response = await slackClient.conversations.history({
       channel: channelId,
       limit: 100,
     });
 
-    console.log(`🔹 ${response.messages.length} messages fetched`);
-    const messages = response.messages;
-    const tasks = [];
+    const messages = response.messages.filter(msg =>
+      moment.unix(msg.ts).format("YYYY-MM-DD") === targetDate
+    );
 
-    for (const msg of messages) {
-      if (msg.text.includes(":fire:")) {
-        console.log(`✅ Task found: "${msg.text}"`);
-        const permalink = await slackClient.chat.getPermalink({
-          channel: channelId,
-          message_ts: msg.ts,
-        });
-        tasks.push(`- ${msg.text} - ${permalink.permalink}`);
-      }
-    }
-
-    const taskList = tasks.length ? tasks.join("\n") : "No tasks found.";
-    console.log("📌 Sending task list to Slack...");
-    await slackClient.chat.postMessage({
-      channel: channelId,
-      text: `*Tasks finished:*\n${taskList}`,
-    });
-    console.log("✅ Task list sent successfully!");
+    console.log(`🔹 Found ${messages.length} messages from ${targetDate}`);
+    return messages.map(msg => `- ${msg.text}`).join("\n");
   } catch (error) {
-    console.error("❌ Error fetching tasks:", error);
+    console.error("❌ Error fetching history:", error);
+    return "No history found.";
   }
 }
 
-// 🔹 Fungsi untuk respon AI (sementara placeholder)
-async function aiResponse(channelId, message) {
-  console.log(`📌 AI is generating response for: "${message}"`);
+async function generateAIResponse(userCommand, chatHistory) {
+  console.log(`🤖 Sending request to OpenAI...`);
   try {
-    await slackClient.chat.postMessage({
-      channel: channelId,
-      text: `🤖 AI Response: "${message}"`,
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4",
+      messages: [
+        { role: "system", content: "You are a Slack assistant that summarizes chat history and answers based on past discussions." },
+        { role: "user", content: `Here is the chat history:\n${chatHistory}\n\nNow, based on the command "${userCommand}", generate a relevant response.` }
+      ],
     });
-    console.log("✅ AI response sent!");
+
+    console.log(`✅ AI Response: ${completion.choices[0].message.content}`);
+    return completion.choices[0].message.content;
   } catch (error) {
-    console.error("❌ Error sending AI response:", error);
+    console.error("❌ OpenAI API error:", error);
+    return "Error generating AI response.";
   }
 }
 
