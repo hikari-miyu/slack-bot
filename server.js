@@ -29,15 +29,21 @@ app.post("/slack/events", async (req, res) => {
     if (userMessageOriginal.includes(`<@${botUserId}>`)) {
       console.log("✅ Bot was mentioned!");
       const command = userMessage.replace(`<@${botUserId}>`, "").trim();
+      
+      // 1️⃣ Ambil history chat sebelum AI menjawab
+      const history = await getChatHistory(channelId, "yesterday"); // Bisa ubah ke 'today' atau range lain
+      
+      // 2️⃣ Analisis intent berdasarkan perintah user
       const aiIntent = await analyzeIntent(command);
       console.log("📌 Intent detected:", aiIntent);
 
+      // 3️⃣ Eksekusi perintah berdasarkan intent
       if (aiIntent.action === "list_tasks") {
-        await listTasks(channelId, aiIntent.date);
+        await listTasks(channelId, aiIntent.date, history);
       } else if (aiIntent.action === "delete_messages") {
         await removeBotMessages(channelId, aiIntent.date, aiIntent.count);
       } else {
-        await aiResponse(channelId, command);
+        await aiResponse(channelId, command, history); // ⬅️ AI sekarang pakai history sebagai konteks
       }
     } else {
       console.log("⚠️ Bot was NOT mentioned, ignoring...");
@@ -46,90 +52,37 @@ app.post("/slack/events", async (req, res) => {
   res.sendStatus(200);
 });
 
-async function analyzeIntent(command) {
-  console.log(`📤 Sending request to OpenAI: "${command}"`);
+// 🔥 Fungsi untuk mengambil history chat
+async function getChatHistory(channel, date) {
   try {
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4-turbo",
-      response_format: "json",
-      messages: [
-        {
-          role: "system",
-          content: `You are a Slack bot assistant that extracts user intent from messages. 
-          Respond ONLY in JSON format. Example output:
-          
-          - {"action": "delete_messages", "date": "today"}
-          - {"action": "list_tasks", "date": "yesterday"}
-          - {"action": "summarize_chat", "date": "this week"}
-          - {"action": "unknown"}
-          
-          Possible actions:
-          - "delete_messages" -> When user wants to delete messages.
-          - "list_tasks" -> When user asks for completed or pending tasks.
-          - "summarize_chat" -> When user asks for a chat summary.
-          - "unknown" -> If intent is unclear.
-
-          Examples:
-          - "delete all my messages today" -> {"action": "delete_messages", "date": "today"}
-          - "erase my chats from yesterday" -> {"action": "delete_messages", "date": "yesterday"}
-          - "what tasks were completed last week?" -> {"action": "list_tasks", "date": "last week"}
-          - "summarize our chat from Monday" -> {"action": "summarize_chat", "date": "Monday"}
-          - "hello bot, how are you?" -> {"action": "unknown"}
-          `,
-        },
-        { role: "user", content: `Extract intent from: "${command}"` },
-      ],
-      response_format: "json",
-    });
-    return JSON.parse(completion.choices[0].message.content);
-  } catch (error) {
-    console.error("❌ Error analyzing intent:", error);
-    return { action: "unknown" };
-  }
-}
-
-async function removeBotMessages(channelId, date, count = 1) {
-  try {
-    console.log(`🗑️ Removing messages from bot in channel ${channelId}`);
-
+    console.log(`📜 Fetching chat history from ${date} in channel ${channel}`);
+    
+    const fromTimestamp = moment(date, "YYYY-MM-DD").startOf("day").unix();
+    
     const response = await slackClient.conversations.history({
-      channel: channelId,
-      limit: 100,
+      channel: channel,
+      oldest: fromTimestamp.toString(),
+      limit: 50, // Ambil 50 pesan terakhir
     });
 
-    let botMessages = response.messages.filter((msg) => msg.user === botUserId);
-
-    if (date) {
-      const targetDate = moment(date, "YYYY-MM-DD").startOf("day");
-      botMessages = botMessages.filter((msg) =>
-        moment.unix(msg.ts).isSame(targetDate, "day")
-      );
-    } else {
-      botMessages = botMessages.slice(0, count);
-    }
-
-    for (const msg of botMessages) {
-      console.log(`🚮 Deleting message: ${msg.text}`);
-      await slackClient.chat.delete({ channel: channelId, ts: msg.ts });
-    }
-
-    await slackClient.chat.postMessage({
-      channel: channelId,
-      text: `✅ Removed ${botMessages.length} of my messages.`,
-    });
+    console.log(`📜 Found ${response.messages.length} messages`);
+    return response.messages.map(msg => msg.text).join("\n"); // Gabungkan pesan sebagai satu teks
   } catch (error) {
-    console.error("❌ Error deleting messages:", error);
+    console.error("❌ Error fetching chat history:", error);
+    return "";
   }
 }
 
-async function aiResponse(channelId, message) {
+// 🔥 Modifikasi AI Response untuk pakai history chat
+async function aiResponse(channelId, message, history) {
   console.log(`📌 AI is generating response for: "${message}"`);
   try {
     const completion = await openai.chat.completions.create({
       model: "gpt-4",
       messages: [
-        { role: "system", content: "You are a helpful Slack assistant." },
-        { role: "user", content: message },
+        { role: "system", content: "You are a helpful Slack assistant. Use the chat history for better context." },
+        { role: "user", content: `Chat history:\n${history}` },
+        { role: "user", content: `User's message: "${message}"` },
       ],
     });
     console.log("📥 OpenAI Response:", completion.choices[0].message.content);
