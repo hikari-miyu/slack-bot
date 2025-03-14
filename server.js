@@ -22,11 +22,16 @@ app.post("/slack/events", async (req, res) => {
   if (event && event.type === "message" && !event.subtype) {
     const channelId = event.channel;
     const userMessage = event.text.toLowerCase();
+    const botUserId = process.env.SLACK_BOT_USER_ID; // ID bot di Slack
+
+    // Cek apakah bot ditag dalam pesan
+    const isMentioned = userMessage.includes(`<@${botUserId}>`);
 
     if (userMessage.includes("list me my tasks")) {
       await listTasks(channelId);
-    } else {
-      const aiResponse = await askOpenAI(userMessage);
+    } else if (isMentioned) {
+      const cleanMessage = userMessage.replace(`<@${botUserId}>`, "").trim();
+      const aiResponse = await askOpenAI(cleanMessage);
       await slackClient.chat.postMessage({ channel: channelId, text: aiResponse });
     }
   }
