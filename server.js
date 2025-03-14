@@ -220,7 +220,7 @@ async function processWithAI(userCommand, history) {
     console.log("🚀 Sending request to OpenAI...");
 
     const completion = await openai.chat.completions.create({
-      model: "gpt-4",
+      model: "gpt-4-turbo",
       messages: [{ role: "user", content: prompt }],
     });
 
