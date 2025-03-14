@@ -52,4 +52,52 @@ app.post("/slack/events", async (req, res) => {
 async function listTasks(channelId) {
   console.log("🔹 Fetching task list from Slack...");
   try {
-    cons
+    const response = await slackClient.conversations.history({
+      channel: channelId,
+      limit: 100,
+    });
+
+    console.log(`🔹 ${response.messages.length} messages fetched`);
+    const messages = response.messages;
+    const tasks = [];
+
+    for (const msg of messages) {
+      if (msg.text.includes(":fire:")) {
+        console.log(`✅ Task found: "${msg.text}"`);
+        const permalink = await slackClient.chat.getPermalink({
+          channel: channelId,
+          message_ts: msg.ts,
+        });
+        tasks.push(`- ${msg.text} - ${permalink.permalink}`);
+      }
+    }
+
+    const taskList = tasks.length ? tasks.join("\n") : "No tasks found.";
+    console.log("📌 Sending task list to Slack...");
+    await slackClient.chat.postMessage({
+      channel: channelId,
+      text: `*Tasks finished:*\n${taskList}`,
+    });
+    console.log("✅ Task list sent successfully!");
+  } catch (error) {
+    console.error("❌ Error fetching tasks:", error);
+  }
+}
+
+// 🔹 Fungsi untuk respon AI (sementara placeholder)
+async function aiResponse(channelId, message) {
+  console.log(`📌 AI is generating response for: "${message}"`);
+  try {
+    await slackClient.chat.postMessage({
+      channel: channelId,
+      text: `🤖 AI Response: "${message}"`,
+    });
+    console.log("✅ AI response sent!");
+  } catch (error) {
+    console.error("❌ Error sending AI response:", error);
+  }
+}
+
+app.listen(port, () => {
+  console.log(`🚀 Slack bot listening on port ${port}`);
+});
