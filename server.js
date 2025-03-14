@@ -6,122 +6,271 @@ const moment = require("moment");
 
 const app = express();
 const port = process.env.PORT || 3000;
-const slackClient = new WebClient(process.env.SLACK_BOT_TOKEN);
+
+const slackBot = new WebClient(process.env.SLACK_BOT_TOKEN);
+const slackClient = new WebClient(process.env.SLACK_BOT_AS_USER_TOKEN);
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const botUserId = process.env.SLACK_BOT_USER_ID;
 
 app.use(express.json());
 
+const botResponses = {}; // Menyimpan pesan bot untuk penghapusan jika user tidak puas
+
+/**
+ * Menangani event dari Slack
+ */
 app.post("/slack/events", async (req, res) => {
-  console.log("\n✅ Received Slack Event:", JSON.stringify(req.body, null, 2));
+  // console.log("\n✅ Received Slack Event:", JSON.stringify(req.body, null, 2));
   const { type, challenge, event } = req.body;
 
+  // 🔥 Kirim respons lebih awal untuk menghindari event berulang
+  res.sendStatus(200);
+
+  // Slack URL verification
   if (type === "url_verification") {
+    console.log("🔍 Verifying Slack URL...");
     return res.status(200).json({ challenge });
   }
 
-  if (event && event.type === "message" && !event.subtype) {
-    console.log(`🔹 New Message Received: "${event.text}"`);
+  if (!event) {
+    console.log("⚠️ No event found in request.");
+    return;
+  }
+
+  // console.log(`🔔 Received event of type: ${event.type}`);
+
+  // Jika event adalah pesan teks
+  if (
+    event.type === "message" &&
+    !event.subtype &&
+    event.text.includes(`<@${botUserId}>`)
+  ) {
+    // console.log("📝 Message detected!");
     const channelId = event.channel;
     const userMessageOriginal = event.text.trim();
-    const userMessage = userMessageOriginal.toLowerCase();
 
     if (userMessageOriginal.includes(`<@${botUserId}>`)) {
-      console.log("✅ Bot was mentioned!");
-      const command = userMessage.replace(`<@${botUserId}>`, "").trim();
-      
-      // 1️⃣ Analisis intent user
-      const aiIntent = await analyzeIntent(command);
-      console.log("📌 Intent detected:", aiIntent);
+      // console.log("✅ Bot was mentioned!");
+      const command = userMessageOriginal.replace(`<@${botUserId}>`, "").trim();
 
-      // 2️⃣ Pastikan tanggal masih dalam batas 7 hari
-      if (aiIntent.date && !isDateWithinLimit(aiIntent.date)) {
-        console.log("⚠️ Date exceeds 7-day limit!");
-        await slackClient.chat.postMessage({
-          channel: channelId,
-          text: "⚠️ Maaf, saya hanya bisa mengakses history maksimal 7 hari ke belakang.",
-        });
-        return;
-      }
+      // Ambil history chat
+      // console.log("📜 Fetching today's chat history...");
+      const history = await getChatHistory(channelId);
+      console.log("✅ Chat history retrieved!");
 
-      // 3️⃣ Ambil history chat (jika valid)
-      const history = aiIntent.date ? await getChatHistory(channelId, aiIntent.date) : "";
+      // Analisis intent dari user menggunakan OpenAI
+      // console.log(`🤖 Sending command to OpenAI: "${command}"`);
+      const response = await processWithAI(command, history);
+      // console.log(`📩 OpenAI Response: "${response}"`);
 
-      // 4️⃣ Jalankan aksi sesuai intent
-      if (aiIntent.action === "list_tasks") {
-        await listTasks(channelId, aiIntent.date, history);
-      } else if (aiIntent.action === "delete_messages") {
-        await removeBotMessages(channelId, aiIntent.date, aiIntent.count);
-      } else {
-        await aiResponse(channelId, command, history); // AI pakai history sebagai konteks
-      }
-    } else {
-      console.log("⚠️ Bot was NOT mentioned, ignoring...");
+      // Kirim jawaban ke Slack channel
+      // console.log("📤 Sending response to Slack channel...");
+      const sentMessage = await slackBot.chat.postMessage({
+        channel: channelId,
+        text: `🤖 ${response}`,
+      });
+
+      // Simpan ts pesan bot agar bisa dihapus jika user tidak puas
+      botResponses[sentMessage.ts] = channelId;
+      console.log(`✅ Bot message stored: ${sentMessage.ts}`);
     }
   }
-  res.sendStatus(200);
+
+  if (event && event.type === "reaction_added") {
+    // console.log(
+    //   `🔍 Reaction event detected: ${JSON.stringify(event, null, 2)}`
+    // );
+
+    if (event.reaction === "x") {
+      // console.log(
+      //   `❌ User ${event.user} added ❌ reaction to message ${event.item.ts}`
+      // );
+      await deleteBotMessage(event);
+    }
+  }
 });
 
-// 🔥 Fungsi untuk cek apakah tanggal dalam batas 7 hari
-function isDateWithinLimit(dateString) {
-  const targetDate = moment(dateString, "YYYY-MM-DD");
-  const sevenDaysAgo = moment().subtract(7, "days").startOf("day");
-  return targetDate.isSameOrAfter(sevenDaysAgo);
-}
+/**
+ * Mengambil history chat dari Slack dalam batas 7 hari terakhir
+ */
+// async function getChatHistory(channel) {
+//   try {
+//     console.log(`📜 Fetching today's chat history from channel ${channel}`);
 
-// 🔥 Fungsi untuk mengambil history chat (dengan validasi 7 hari)
-async function getChatHistory(channel, date) {
-  if (!isDateWithinLimit(date)) {
-    console.log("⛔ Request untuk history lebih dari 7 hari ditolak.");
-    return "⚠️ History lebih dari 7 hari tidak bisa diakses.";
-  }
+//     // Set batas waktu hanya dari hari ini
+// const sevenDaysAgo = moment().subtract(3, "days").startOf("day").unix();
+//     const now = moment().unix();
 
+//     // Ambil pesan dari Slack API
+//     const response = await slackBot.conversations.history({
+//       channel: channel,
+//       oldest: todayStart.toString(), // Hanya ambil pesan sejak hari ini
+//       latest: now.toString(),
+//       limit: 100, // Ambil maksimal 100 pesan
+//     });
+
+//     console.log(`📜 Found ${response.messages.length} messages`);
+
+//     // Format chat history dengan timestamp yang lebih mudah dibaca
+//     const formattedHistory = response.messages
+//       .map((msg) => {
+//         const timestamp = moment.unix(msg.ts).format("YYYY-MM-DD HH:mm:ss");
+//         return `[${timestamp}] ${msg.user}: ${msg.text}`;
+//       })
+//       .join("\n");
+
+//     return formattedHistory;
+//   } catch (error) {
+//     console.error("❌ Error fetching chat history:", error);
+//     return "";
+//   }
+// }
+async function getChatHistory(channel) {
   try {
-    console.log(`📜 Fetching chat history from ${date} in channel ${channel}`);
-    
-    const fromTimestamp = moment(date, "YYYY-MM-DD").startOf("day").unix();
-    
+    console.log(`📜 Fetching chat history from channel ${channel}`);
+
+    const fewDaysAgo = moment().subtract(3, "days").startOf("day").unix();
+    const now = moment().unix();
+
     const response = await slackClient.conversations.history({
       channel: channel,
-      oldest: fromTimestamp.toString(),
-      limit: 50, // Ambil 50 pesan terakhir
+      oldest: fewDaysAgo.toString(),
+      latest: now.toString(),
+      limit: 100, // Ambil maksimal 100 pesan terakhir
     });
 
-    console.log(`📜 Found ${response.messages.length} messages`);
-    return response.messages.map(msg => msg.text).join("\n"); // Gabungkan pesan sebagai satu teks
+    // console.log(`📜 Found ${response.messages.length} messages`);
+
+    // 🔥 Format dengan timestamp
+    const formattedHistory = response.messages
+      .map((msg) => {
+        const timestamp = moment.unix(msg.ts).format("YYYY-MM-DD HH:mm:ss");
+        return `[${timestamp}] ${msg.user}: ${msg.text}`;
+      })
+      .join("\n");
+
+    return formattedHistory;
   } catch (error) {
     console.error("❌ Error fetching chat history:", error);
     return "";
   }
 }
 
-// 🔥 AI Response (gunakan history chat jika ada)
-async function aiResponse(channelId, message, history) {
-  console.log(`📌 AI is generating response for: "${message}"`);
+/**
+ * Memproses permintaan pengguna dengan OpenAI
+ */
+// async function processWithAI(userCommand, history) {
+//   try {
+//     console.log("🔍 Preparing OpenAI request...");
+//     const prompt = `
+//         You are a Slack assistant that understands user commands and references chat history as a knowledge base.
+//         - If the user asks for completed tasks, analyze history and extract them.
+//         - If the user asks for blocked tasks, extract tasks that mention being blocked.
+//         - If the user asks for general help, answer accordingly.
+//         - Do not treat the history as private; use it as a knowledge base.
+
+//         Chat History:
+//         ${history}
+
+//         User Command: "${userCommand}"
+
+//         Respond concisely based on the history.
+//         `;
+
+//     console.log("🚀 Sending request to OpenAI...");
+//     const completion = await openai.chat.completions.create({
+//       model: "gpt-4",
+//       messages: [{ role: "user", content: prompt }],
+//     });
+
+//     console.log("✅ OpenAI response received:", completion);
+//     return completion.choices[0].message.content;
+//   } catch (error) {
+//     console.error("❌ Error processing with OpenAI:", error);
+//     return "⚠️ Sorry, I couldn't process the request.";
+//   }
+// }
+async function processWithAI(userCommand, history) {
   try {
-    const messages = [{ role: "system", content: "You are a helpful Slack assistant." }];
+    console.log("🔍 Preparing OpenAI request...");
 
-    if (history && !history.includes("⚠️ History lebih dari 7 hari tidak bisa diakses.")) {
-      messages.push({ role: "user", content: `Chat history:\n${history}` });
-    }
+    // 🔥 Batasi jumlah pesan yang dikirim ke OpenAI untuk menghindari melebihi batas token
+    const trimmedHistory = history.split("\n").slice(-30).join("\n"); // Ambil 30 pesan terakhir
 
-    messages.push({ role: "user", content: `User's message: "${message}"` });
+    // console.log('[history]', history);
+    // console.log('[trimmedHistory]', trimmedHistory);
+
+    const botUserId = process.env.SLACK_BOT_USER_ID;
+
+    const prompt = `
+      You are a Slack assistant named "Helper" with User ID ${botUserId}.
+      Your role is to assist users by continuing conversations naturally and answering relevant questions.
+      You must respond in a helpful and concise manner, keeping your responses within the context of the current chat.
+      If the user asks about a task, status, or request that has been discussed in history, use that information.
+      If the user doesn't ask anything relevant, do not respond.
+
+      Chat History (last 30 messages):
+      ${history}
+
+      User Command: "${userCommand}"
+
+      Respond naturally and only if necessary.
+      `;
+
+    console.log("🚀 Sending request to OpenAI...");
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4",
-      messages,
+      messages: [{ role: "user", content: prompt }],
     });
 
-    console.log("📥 OpenAI Response:", completion.choices[0].message.content);
-    await slackClient.chat.postMessage({
-      channel: channelId,
-      text: `🤖 ${completion.choices[0].message.content}`,
-    });
+    console.log(
+      "✅ OpenAI response received:",
+      completion.choices[0].message.content
+    );
+    return completion.choices[0].message.content;
   } catch (error) {
-    console.error("❌ Error with AI response:", error);
+    console.error("❌ Error processing with OpenAI:", error);
+    return "⚠️ Sorry, I couldn't process the request.";
   }
 }
 
+/**
+ * Menghapus pesan bot jika user memberikan emoji ❌
+ */
+async function deleteBotMessage(event) {
+  try {
+    const messageTs = event.item.ts;
+    const channelId = event.item.channel;
+    const messageUser = event.item_user; // 🔍 Ini adalah user yang mengirim pesan awal
+
+    // console.log(
+    //   `🗑️ Checking if message ${messageTs} in channel ${channelId} is a bot message...`
+    // );
+
+    // 🔥 Cek apakah pesan ini dikirim oleh bot
+    if (messageUser === botUserId) {
+      // console.log(
+      //   "✅ Message was sent by the bot. Proceeding with deletion..."
+      // );
+
+      await slackBot.chat.delete({ channel: channelId, ts: messageTs });
+      // console.log(
+      //   `✅ Successfully deleted bot message in channel ${channelId}`
+      // );
+    } else {
+      console.log(
+        "⚠️ This message was not sent by the bot. Ignoring delete request."
+      );
+    }
+  } catch (error) {
+    console.error("❌ Error deleting message:", error);
+  }
+}
+
+/**
+ * Menjalankan server
+ */
 app.listen(port, () => {
   console.log(`🚀 Slack bot listening on port ${port}`);
 });
